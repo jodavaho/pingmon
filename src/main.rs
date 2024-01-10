@@ -1,34 +1,36 @@
-use logos::Logos;
 
-#[derive(Logos, Debug, PartialEq)]
-enum Line
+use std::net::Ipv4Addr;
+use std::net::IpAddr;
+use std::thread;
+use tracert::trace::Tracer;
+use serde::{Serialize, Deserialize};
+
+#[derive(Debug)]
+#[derive(Serialize, Deserialize)]
+struct SHop
 {
-    #[token("\n")]
-    NewLine,
-    #[token(" ")]
-    Space,
-    #[regex(r"[0-9]+", |lex| lex.slice().parse().ok())]
-    Entry(u32),
-    #[regex(r"[ \t\f]+", logos::skip)]
-    Remainder,
+    rtt:u128,
+    seq:i32,
+    host:String,
+    ip:String
 }
 
-fn main()
-{
-    let input = "
- 1  10.64.0.1 (10.64.0.1)  17.249 ms  17.186 ms  17.243 ms
- 2  static-68-235-44-1.cust.tzulo.com (68.235.44.1)  17.227 ms  17.213 ms  17.200 ms
- ";
+fn main() {
+    let dest_str = "34.174.155.119";
+    let destination = IpAddr::V4(dest_str.parse::<Ipv4Addr>().unwrap());
+    let tracer:Tracer = Tracer::new(destination).expect("Error creating tracer");
 
-    let mut lex = Line::lexer(input);
-    while let Some(x) = lex.next() {
-        match x {
-            Ok(Line::Entry(x)) => println!("Entry: {}", x),
-            Ok(Line::Remainder) => println!("Remainder: {}", lex.slice()),
-            Ok(Line::Space) => println!("{}", lex.slice()),
-            Ok(Line::NewLine) => println!("NewLine"),
-            Err(_) => println!("Other: {}", lex.slice()),
+    let handle = thread::spawn(move || tracer.trace());
+
+    match handle.join(){
+        Ok(result) => {
+            let nodes = result.unwrap().nodes;
+            for n in nodes
+            {
+                let s = SHop{ rtt:n.rtt.as_micros(), seq:n.seq.into(), host:n.host_name, ip:n.ip_addr.to_string() };
+                println!("{}", serde_json::to_string(&s).unwrap());
+            }
         }
+        Err(e) => eprintln!("Error: {:?}", e),
     }
-
 }
