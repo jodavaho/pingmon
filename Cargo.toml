@@ -3,8 +3,5 @@ name = "pingmon"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-libc = "0.2.150"
-socket2 = { version = "0.5.5", features = ["all"] }
+logos = "0.13.0"
