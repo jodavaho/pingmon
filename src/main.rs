@@ -4,6 +4,7 @@ use std::net::IpAddr;
 use std::thread;
 use tracert::trace::Tracer;
 use serde::{Serialize, Deserialize};
+use serde_json::json;
 
 #[derive(Debug)]
 #[derive(Serialize, Deserialize)]
@@ -16,21 +17,34 @@ struct SHop
 }
 
 fn main() {
-    let dest_str = "34.174.155.119";
+
+
+    let dest_str = std::env::args().nth(1).expect("No destination specified");
     let destination = IpAddr::V4(dest_str.parse::<Ipv4Addr>().unwrap());
     let tracer:Tracer = Tracer::new(destination).expect("Error creating tracer");
 
     let handle = thread::spawn(move || tracer.trace());
 
-    match handle.join(){
+
+    let hop_list :Vec<SHop> = match handle.join(){
         Ok(result) => {
-            let nodes = result.unwrap().nodes;
-            for n in nodes
-            {
-                let s = SHop{ rtt:n.rtt.as_micros(), seq:n.seq.into(), host:n.host_name, ip:n.ip_addr.to_string() };
-                println!("{}", serde_json::to_string(&s).unwrap());
-            }
+            result.unwrap()
+                .nodes.iter()
+                .map(|n| 
+                     SHop{ 
+                         rtt:n.rtt.as_micros(), 
+                         seq:n.seq.into(), 
+                         host:n.host_name.to_owned(), 
+                         ip:n.ip_addr.to_string() 
+                     }).collect()
         }
-        Err(e) => eprintln!("Error: {:?}", e),
-    }
+        Err(e) => {
+            eprintln!("Error: {:?}", e); 
+            Vec::new()
+        }
+    };
+
+    println!("{}", json!(&hop_list));
+
+
 }
