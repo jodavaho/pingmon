@@ -32,7 +32,7 @@ struct CliArgs{
     hosts:Vec<String>,
 
     #[argp(switch, short='v', long="verbose")]
-    /// Verbose output, specify multiple times for more verbosity
+    /// Verbose output, specify multiple times for more verbosity. Also honors PINGMON_LOG environment variable set to a log level
     verbose:i32,
 
 
@@ -82,7 +82,8 @@ fn main() {
             3 => "debug",
             _ => "trace"
         };
-        env_logger::Builder::from_env(Env::default().default_filter_or(default_level)).init();
+        env_logger::Builder::from_env(Env::default().filter_or("PINGMON_LOG", default_level)).init();
+        //env_logger::Builder::from_env(Env::default().default_filter_or(default_level)).init();
     } else {
         log::set_max_level(log::LevelFilter::Off);
     }
