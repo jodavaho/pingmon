@@ -1,7 +1,13 @@
 [package]
 name = "pingmon"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+description = "A simple ping monitor that sends data to a backend."
+license = "MIT"
+copyright = "2024, \"Joshua Vander Hook\" <josh@vanderhook.info>"
+authors = ["Joshua Vander Hook <josh@vanderhook.info>"]
+homepage = "https://github.com/jodavaho/pingmon"
+repository = "https://github.com/jodavaho/pingmon"
 
 [dependencies]
 argp = "0.3.0"
@@ -11,12 +17,30 @@ directories = "5.0.1"
 env_logger = "0.11.3"
 futures = "0.3.30"
 log = "0.4.21"
-reqwest = "0.12.4"
+reqwest = { version = "0.12.4", features = ["rustls-tls","charset","http2"], default-features = false }
 serde = { version = "1.0.195", features = ["derive"] }
 serde_json = "1.0.111"
 tokio = { version = "1.37.0", features = ["rt-multi-thread"] }
 toml = "0.8.12"
 tracert = "0.7.0"
+
+[package.metadata.deb]
+maintainer = "Joshua Vander Hook <josh@vanderhook.info>"
+copyright = "2024, \"Joshua Vander Hook\" <josh@vanderhook.info>"
+license = "MIT"
+extended_description = """\
+A simple periodic traceroute and ping monitor that sends data to a backend for analysis.\
+"""
+depends = "$auto"
+section = "net"
+priotity = "optional"
+assets = [
+  ["target/release/pingmon", "/usr/bin/pingmon", "755"],
+  ["assets/pingmon.service", "/etc/systemd/system/pingmon.service"],
+  ["assets/pingmon.toml", "/etc/pingmon.toml"],
+  ["README.md", "/usr/share/doc/pingmon/README.md", "644"],
+  ["LICENSE", "/usr/share/doc/pingmon/LICENSE","644"],
+]
 
 [[bin]]
 name = "pingmon"

@@ -291,7 +291,6 @@ fn main() {
             }
         };
         results.push(hop_list.clone());
-        println!("{}", json!(&hop_list));
     }
 
     let influxdb_api_key:String = match args.influxdb_api_key{
@@ -332,6 +331,7 @@ fn main() {
 
     //let full_host = format!("{}:{}", influxdb_host, influxdb_port);
     let full_host = format!("{}", influxdb_host);
+    println!("{}",json!(results).to_string());
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async{
@@ -339,5 +339,4 @@ fn main() {
             post_to_influxdb2(&influxdb_api_key, &full_host, &influxdb_org, &influxdb_bucket, batch).await.unwrap();
         }
     });
-
 }
