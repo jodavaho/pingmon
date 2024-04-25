@@ -10,27 +10,57 @@ use std::path::PathBuf;
 use atty::Stream;
 use env_logger::Env;
 use chrono::{DateTime,Utc};
-use influxdb::InfluxDbWriteable;
 
-#[derive(Debug,Serialize, Deserialize, Clone, InfluxDbWriteable)]
+#[derive(Debug,Serialize, Deserialize, Clone)]
 struct SHop
 {
     rtt:u64,
-    #[influxdb(tag)]
     seq:u64,
-    #[influxdb(tag)]
     host:String,
-    #[influxdb(tag)]
     ip:String,
     timeout:bool,
-    #[influxdb(tag)]
     final_dest:String,
-    #[influxdb(tag)]
     node_type:String,
     time:DateTime<Utc>
 }
 
 impl SHop{
+    fn to_line_protocol_v2(&self, measurement:&str)->String{
+        format!("{} seq={},host=\"{}\",ip=\"{}\",timeout={},final_dest=\"{}\",node_type=\"{}\" {} {}",
+                measurement,
+                self.seq,
+                self.host,
+                self.ip,
+                self.timeout,
+                self.final_dest,
+                self.node_type,
+                self.rtt,
+                self.time.timestamp_nanos_opt().unwrap_or(
+                    self.time.timestamp_micros() as i64 * 1_000
+                ),
+                )
+    }
+
+}
+
+fn batch_to_line(batch:Vec<SHop>, measurement:&str)->String{
+    batch.iter()
+        .map(|h| h.to_line_protocol_v2(measurement))
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+async fn post_to_influxdb2(api_key:&str, host:&str, org:&str, bucket:&str, batch:Vec<SHop>)->Result<(),reqwest::Error>{
+    let client = reqwest::Client::new();
+    let url = format!("{}/api/v2/write?org={}&bucket={}&precision=ns", host, org, bucket);
+    let data = batch_to_line(batch, "pingmon");
+    let res = client.post(&url)
+        .header("Authorization", format!("Token {}", api_key))
+        .header("Content-Type", "text/plain")
+        .body(data)
+        .send().await?;
+    info!("InfluxDB response: {:?}", res);
+    Ok(())
 }
 
 #[derive(Debug,FromArgs)]
