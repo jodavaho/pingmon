@@ -9,15 +9,33 @@ use argp::FromArgs;
 use std::path::PathBuf;
 use atty::Stream;
 use env_logger::Env;
+use influxdb2_derive::WriteDataPoint;
+use chrono::{DateTime, Utc};
+use futures::prelude::*;
 
-#[derive(Debug)]
-#[derive(Serialize, Deserialize)]
+#[derive(Debug,Serialize, Deserialize, Clone, WriteDataPoint)]
+#[measurement("pingmon")]
 struct SHop
 {
-    rtt:u128,
-    seq:i32,
+    #[influxdb(field)]
+    rtt:u64,
+    #[influxdb(tag)]
+    seq:u64,
+    #[influxdb(tag)]
     host:String,
-    ip:String
+    #[influxdb(tag)]
+    ip:String,
+    #[influxdb(field)]
+    timeout:bool,
+    #[influxdb(tag)]
+    final_dest:String,
+    #[influxdb(tag)]
+    node_type:String,
+    #[influxdb(timestamp)]
+    time:u64
+}
+
+impl SHop{
 }
 
 #[derive(Debug,FromArgs)]
@@ -35,6 +53,13 @@ struct CliArgs{
     /// Verbose output, specify multiple times for more verbosity. Also honors PINGMON_LOG environment variable set to a log level
     verbose:i32,
 
+    #[argp(option, short='k', long="api-key")]
+    /// InfluxDB API key
+    api_key:Option<String>,
+
+    #[argp(option, long="influx-host")]
+    /// InfluxDB host
+    influxdb_host:Option<String>
 
 }
 
@@ -51,7 +76,11 @@ struct CliConfig{
     #[serde(default="get_default_host_list_path")]
     host_list_file:PathBuf,
 
-    hosts:Vec<String>
+    hosts:Vec<String>,
+
+    api_key:Option<String>,
+
+    influxdb_host:Option<String>
 
 }
 
@@ -59,7 +88,9 @@ impl Default for CliConfig{
     fn default()->Self{
         CliConfig{
             host_list_file:get_default_host_list_path(),
-            hosts:Vec::new()
+            hosts:Vec::new(),
+            api_key:None,
+            influxdb_host:None
         }
     }
 }
@@ -143,7 +174,9 @@ fn main() {
     }
 
     debug!("Host list: {:?}", host_list);
+    let mut results = Vec::<Vec::<SHop>>::new();
 
+    //todo make this a thread pool or something
     for destination in host_list{
 
         let destination = match destination.parse::<IpAddr>()
@@ -164,6 +197,7 @@ fn main() {
             }
         };
 
+        let start_time = Utc::now();
         let handle = thread::spawn(move || tracer.trace());
 
         let hop_list :Vec<SHop> = match handle.join(){
@@ -174,10 +208,20 @@ fn main() {
                          {
                              debug!("{:?}", n);
                              SHop{ 
-                                 rtt:n.rtt.as_micros(), 
+                                 rtt:n.rtt.as_micros() as u64 * 1000,
                                  seq:n.seq.into(), 
                                  host:n.host_name.to_owned(), 
-                                 ip:n.ip_addr.to_string() 
+                                 ip:n.ip_addr.to_string(),
+                                 timeout:n.rtt.as_micros() == 0,
+                                 final_dest:destination.to_string(),
+                                 node_type:
+                                     match n.node_type{
+                                         tracert::node::NodeType::DefaultGateway => "DefaultGateway".to_string(),
+                                         tracert::node::NodeType::Relay => "Relay".to_string(),
+                                         tracert::node::NodeType::Destination => "Destination".to_string(),
+                                     },
+                                 time:start_time.timestamp_micros() as u64 * 1000
+
                              }
                          }).collect()
 
@@ -190,10 +234,38 @@ fn main() {
                 Vec::new()
             }
         };
-
+        results.push(hop_list.clone());
         println!("{}", json!(&hop_list));
     }
-    eprintln!("Done");
+
+    let api_key:String = match args.api_key{
+        Some(k) => k,
+        None => cfg.api_key.unwrap_or("".to_string())
+    };
+
+    let influxdb_host = args.influxdb_host
+        .unwrap_or(
+            cfg.influxdb_host
+            .unwrap_or("http://localhost:8086".to_string())
+            );
+
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async{
+        debug!("Writing to influx");
+        for hops in results{
+            debug!("Writing hops: {:?}", hops);
+            let client = influxdb2::Client::new(&influxdb_host, "pingmon",&api_key);
+            tokio::spawn(async move {
+                debug!("async writing to influx");
+                match client.write("pingmon", stream::iter(hops)).await{
+                    Ok(_) => info!("Wrote to influx"),
+                    Err(e) => error!("Error writing to influx: {}", e)
+                }
+            }).await.unwrap();
+        }
+    });
+    
 }
 
 
