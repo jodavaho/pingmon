@@ -9,15 +9,12 @@ use argp::FromArgs;
 use std::path::PathBuf;
 use atty::Stream;
 use env_logger::Env;
-use influxdb2_derive::WriteDataPoint;
-use chrono::{DateTime, Utc};
-use futures::prelude::*;
+use chrono::{DateTime,Utc};
+use influxdb::InfluxDbWriteable;
 
-#[derive(Debug,Serialize, Deserialize, Clone, WriteDataPoint)]
-#[measurement("pingmon")]
+#[derive(Debug,Serialize, Deserialize, Clone, InfluxDbWriteable)]
 struct SHop
 {
-    #[influxdb(field)]
     rtt:u64,
     #[influxdb(tag)]
     seq:u64,
@@ -25,14 +22,12 @@ struct SHop
     host:String,
     #[influxdb(tag)]
     ip:String,
-    #[influxdb(field)]
     timeout:bool,
     #[influxdb(tag)]
     final_dest:String,
     #[influxdb(tag)]
     node_type:String,
-    #[influxdb(timestamp)]
-    time:u64
+    time:DateTime<Utc>
 }
 
 impl SHop{
@@ -59,8 +54,19 @@ struct CliArgs{
 
     #[argp(option, long="influx-host")]
     /// InfluxDB host
-    influxdb_host:Option<String>
+    influxdb_host:Option<String>,
 
+    #[argp(option, long="influx-org")]
+    /// InfluxDB organization
+    influxdb_org:Option<String>,
+
+    #[argp(option, long="influx-port")]
+    /// InfluxDB port
+    influxdb_port:Option<u16>,
+
+    #[argp(option, long="influx-bucket")]
+    /// InfluxDB bucket
+    influxdb_bucket:Option<String>,
 }
 
 fn get_default_host_list_path()->PathBuf{
@@ -80,7 +86,13 @@ struct CliConfig{
 
     api_key:Option<String>,
 
-    influxdb_host:Option<String>
+    influxdb_host:Option<String>,
+
+    influxdb_org:Option<String>,
+
+    influxdb_port:Option<u16>,
+
+    influxdb_bucket:Option<String>,
 
 }
 
@@ -90,7 +102,10 @@ impl Default for CliConfig{
             host_list_file:get_default_host_list_path(),
             hosts:Vec::new(),
             api_key:None,
-            influxdb_host:None
+            influxdb_host:None,
+            influxdb_org:None,
+            influxdb_port:None,
+            influxdb_bucket:None
         }
     }
 }
@@ -132,7 +147,7 @@ fn main() {
 
     debug!("Config dir: {}", config_dir.to_str().unwrap_or("Unknown"));
 
-    // Check for, and create, the default config file 
+    // Check for, and create, the default config file
     let default_config_file = config_dir.join("config.toml");
     if !default_config_file.exists(){
         debug!("Creating default config file: {:?}", default_config_file);
@@ -166,7 +181,7 @@ fn main() {
                 error!("Error reading specified config file: {}, defaulting", e);
                 toml::to_string(&cfg)
             }).unwrap()).unwrap();
-    } 
+    }
 
     let mut host_list = cfg.hosts;
     if args.hosts.len() > 0{
@@ -204,13 +219,13 @@ fn main() {
             Ok(result) => {
                 result.unwrap()
                     .nodes.iter()
-                    .map(|n| 
+                    .map(|n|
                          {
                              debug!("{:?}", n);
-                             SHop{ 
+                             SHop{
                                  rtt:n.rtt.as_micros() as u64 * 1000,
-                                 seq:n.seq.into(), 
-                                 host:n.host_name.to_owned(), 
+                                 seq:n.seq.into(),
+                                 host:n.host_name.to_owned(),
                                  ip:n.ip_addr.to_string(),
                                  timeout:n.rtt.as_micros() == 0,
                                  final_dest:destination.to_string(),
@@ -220,14 +235,14 @@ fn main() {
                                          tracert::node::NodeType::Relay => "Relay".to_string(),
                                          tracert::node::NodeType::Destination => "Destination".to_string(),
                                      },
-                                 time:start_time.timestamp_micros() as u64 * 1000
+                                 time:start_time,
 
                              }
                          }).collect()
 
             }
             Err(e) => {
-                error!("Error in thread: {}", 
+                error!("Error in thread: {}",
                        e.downcast_ref::<String>()
                        .unwrap_or(&"Unknown error".to_string())
                       );
@@ -249,23 +264,50 @@ fn main() {
             .unwrap_or("http://localhost:8086".to_string())
             );
 
+    let influxdb_org = args.influxdb_org
+        .unwrap_or(
+            cfg.influxdb_org
+            .unwrap_or("none".to_string())
+            );
+
+    let influxdb_port = args.influxdb_port
+        .unwrap_or(
+            cfg.influxdb_port
+            .unwrap_or(8086)
+            );
+
+    let influxdb_bucket = args.influxdb_bucket
+        .unwrap_or(
+            cfg.influxdb_bucket
+            .unwrap_or("pingmon".to_string())
+            );
+
+    debug!("Influx host: {}", influxdb_host);
+    debug!("Influx org: {}", influxdb_org);
+    debug!("Influx port: {}", influxdb_port);
+    debug!("Influx bucket: {}", influxdb_bucket);
+
+    //let full_host = format!("{}:{}", influxdb_host, influxdb_port);
+    let full_host = format!("{}", influxdb_host);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async{
         debug!("Writing to influx");
         for hops in results{
-            debug!("Writing hops: {:?}", hops);
-            let client = influxdb2::Client::new(&influxdb_host, "pingmon",&api_key);
+            debug!("Writing hops to dest {}", hops[0].final_dest);
+            let client = influxdb::Client::new(&full_host, &influxdb_bucket).with_token(&api_key);
+            debug!("{:?}", client);
+            //debug!("{:?}", client.ping().await);
             tokio::spawn(async move {
                 debug!("async writing to influx");
-                match client.write("pingmon", stream::iter(hops)).await{
+                let query:Vec<influxdb::WriteQuery> = hops.iter().map(|h| h.clone().into_query("trace")).collect();
+                debug!("{:?}", query);
+                match client.query(&query).await{
                     Ok(_) => info!("Wrote to influx"),
                     Err(e) => error!("Error writing to influx: {}", e)
                 }
             }).await.unwrap();
         }
     });
-    
+
 }
-
-
