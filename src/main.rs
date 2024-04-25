@@ -26,7 +26,7 @@ struct SHop
 
 impl SHop{
     fn to_line_protocol_v2(&self, measurement:&str)->String{
-        format!("{} seq={},host=\"{}\",ip=\"{}\",timeout={},final_dest=\"{}\",node_type=\"{}\" {} {}",
+        format!("{},seq={},host=\"{}\",ip=\"{}\",timeout={},final_dest=\"{}\",node_type=\"{}\" rtt={} {}",
                 measurement,
                 self.seq,
                 self.host,
@@ -54,12 +54,23 @@ async fn post_to_influxdb2(api_key:&str, host:&str, org:&str, bucket:&str, batch
     let client = reqwest::Client::new();
     let url = format!("{}/api/v2/write?org={}&bucket={}&precision=ns", host, org, bucket);
     let data = batch_to_line(batch, "pingmon");
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert("Authorization", format!("Token {}", api_key).parse().unwrap());
+    headers.insert("Content-Type", "text/plain; charset=utf-8".parse().unwrap());
+    headers.insert("Accept", "application/json".parse().unwrap());
+    debug!("InfluxDB URL: {}", url);
+    debug!("InfluxDB data: {}", data);
+    debug!("InfluxDB headers: {:?}", headers);
     let res = client.post(&url)
-        .header("Authorization", format!("Token {}", api_key))
-        .header("Content-Type", "text/plain")
+        .headers(headers)
         .body(data)
-        .send().await?;
-    info!("InfluxDB response: {:?}", res);
+        .send()
+        .await?;
+
+    let status = &res.status();
+    let txt = res.text().await?;
+    debug!("InfluxDB status: {}", status);
+    debug!("InfluxDB response: {}", txt);
     Ok(())
 }
 
@@ -324,21 +335,8 @@ fn main() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async{
-        debug!("Writing to influx");
-        for hops in results{
-            debug!("Writing hops to dest {}", hops[0].final_dest);
-            let client = influxdb::Client::new(&full_host, &influxdb_bucket).with_token(&influxdb_api_key);
-            debug!("{:?}", client);
-            //debug!("{:?}", client.ping().await);
-            tokio::spawn(async move {
-                debug!("async writing to influx");
-                let query:Vec<influxdb::WriteQuery> = hops.iter().map(|h| h.clone().into_query("ping")).collect();
-                debug!("{:?}", query);
-                match client.query(&query).await{
-                    Ok(_) => info!("Wrote to influx"),
-                    Err(e) => error!("Error writing to influx: {}", e)
-                }
-            }).await.unwrap();
+        for batch in results{
+            post_to_influxdb2(&influxdb_api_key, &full_host, &influxdb_org, &influxdb_bucket, batch).await.unwrap();
         }
     });
 
