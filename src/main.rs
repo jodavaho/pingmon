@@ -50,7 +50,7 @@ struct CliArgs{
 
     #[argp(option, short='k', long="api-key")]
     /// InfluxDB API key
-    api_key:Option<String>,
+    influxdb_api_key:Option<String>,
 
     #[argp(option, long="influx-host")]
     /// InfluxDB host
@@ -84,7 +84,7 @@ struct CliConfig{
 
     hosts:Vec<String>,
 
-    api_key:Option<String>,
+    influxdb_api_key:Option<String>,
 
     influxdb_host:Option<String>,
 
@@ -101,7 +101,7 @@ impl Default for CliConfig{
         CliConfig{
             host_list_file:get_default_host_list_path(),
             hosts:Vec::new(),
-            api_key:None,
+            influxdb_api_key:None,
             influxdb_host:None,
             influxdb_org:None,
             influxdb_port:None,
@@ -253,9 +253,9 @@ fn main() {
         println!("{}", json!(&hop_list));
     }
 
-    let api_key:String = match args.api_key{
+    let influxdb_api_key:String = match args.influxdb_api_key{
         Some(k) => k,
-        None => cfg.api_key.unwrap_or("".to_string())
+        None => cfg.influxdb_api_key.unwrap_or("".to_string())
     };
 
     let influxdb_host = args.influxdb_host
@@ -286,6 +286,8 @@ fn main() {
     debug!("Influx org: {}", influxdb_org);
     debug!("Influx port: {}", influxdb_port);
     debug!("Influx bucket: {}", influxdb_bucket);
+    debug!("Influx token: {}", influxdb_api_key);
+
 
     //let full_host = format!("{}:{}", influxdb_host, influxdb_port);
     let full_host = format!("{}", influxdb_host);
@@ -295,12 +297,12 @@ fn main() {
         debug!("Writing to influx");
         for hops in results{
             debug!("Writing hops to dest {}", hops[0].final_dest);
-            let client = influxdb::Client::new(&full_host, &influxdb_bucket).with_token(&api_key);
+            let client = influxdb::Client::new(&full_host, &influxdb_bucket).with_token(&influxdb_api_key);
             debug!("{:?}", client);
             //debug!("{:?}", client.ping().await);
             tokio::spawn(async move {
                 debug!("async writing to influx");
-                let query:Vec<influxdb::WriteQuery> = hops.iter().map(|h| h.clone().into_query("trace")).collect();
+                let query:Vec<influxdb::WriteQuery> = hops.iter().map(|h| h.clone().into_query("ping")).collect();
                 debug!("{:?}", query);
                 match client.query(&query).await{
                     Ok(_) => info!("Wrote to influx"),
