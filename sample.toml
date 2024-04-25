@@ -1,0 +1,8 @@
+hosts = [
+"142.250.191.206",
+]
+influxdb_host="localhost"
+influxdb_port=8086
+influxdb_org="org"
+influxdb_api_key="xyz"
+influxdb_bucket="pingmon"
