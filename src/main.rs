@@ -1,5 +1,5 @@
 use log;
-use log::{error, info, warn,debug};
+use log::{error, info, warn,debug, trace};
 use std::net::IpAddr;
 use std::thread;
 use tracert::trace::Tracer;
@@ -48,7 +48,67 @@ fn batch_to_line(batch:Vec<SHop>, measurement:&str)->String{
         .join("\n")
 }
 
-async fn post_to_influxdb2(api_key:&str, host:&str, org:&str, bucket:&str, batch:Vec<SHop>)->Result<(),reqwest::Error>{
+async fn trace(destination:String)->Vec<SHop>{
+    let destination = match destination.parse::<IpAddr>()
+    {
+        Ok(ip) => ip,
+        Err(e) => {
+            error!("Error parsing destination: {}, {}", destination, e);
+            return Vec::new()
+        }
+    };
+
+    let tracer:Tracer = match Tracer::new(destination)
+    {
+        Ok(t) => t,
+        Err(e) => {
+            error!("Error creating tracer: {}", e);
+            return Vec::new()
+        }
+    };
+
+    let start_time = Utc::now();
+
+    let hop_list :Vec<SHop> = match tracer.trace()
+    {
+        Ok(result) => {
+            result.nodes.iter()
+                .map(|n|
+                     {
+                         debug!("{:?}", n);
+                         SHop{
+                             rtt:n.rtt.as_micros() as u64 * 1000,
+                             seq:n.seq.into(),
+                             host:n.host_name.to_owned(),
+                             ip:n.ip_addr.to_string(),
+                             timeout:n.rtt.as_micros() == 0,
+                             final_dest:destination.to_string(),
+                             node_type:
+                                 match n.node_type{
+                                     tracert::node::NodeType::DefaultGateway => "DefaultGateway".to_string(),
+                                     tracert::node::NodeType::Relay => "Relay".to_string(),
+                                     tracert::node::NodeType::Destination => "Destination".to_string(),
+                                 },
+                                 time:start_time.timestamp_nanos_opt().unwrap_or(
+                                          start_time.timestamp_micros() * 1000
+                                          ) as u64
+                         }
+                     }).collect()
+
+        }
+        Err(e) => {
+            error!("Error in tracer: {}", e);
+            Vec::new()
+        }
+    };
+    debug!("Trace of {} complete", destination);
+    hop_list
+}
+
+async fn post_to_influxdb2(api_key:String, host:String, org:String, bucket:String, batch:Vec<SHop>)
+    ->Result<(String,u16),reqwest::Error>
+{
+    let destination = batch[0].final_dest.clone();
     let client = reqwest::Client::new();
     let url = format!("{}/api/v2/write?org={}&bucket={}&precision=ns", host, org, bucket);
     let data = batch_to_line(batch, "pingmon");
@@ -69,7 +129,15 @@ async fn post_to_influxdb2(api_key:&str, host:&str, org:&str, bucket:&str, batch
     let txt = res.text().await?;
     debug!("InfluxDB status: {}", status);
     debug!("InfluxDB response: {}", txt);
-    Ok(())
+    match status.as_u16(){
+        200 => Ok((destination,status.as_u16())),
+        204 => Ok((destination,status.as_u16())),
+        x => {
+            error!("Error sending to InfluxDB: {}", x);
+            Ok((destination,x))
+        }
+    }
+
 }
 
 #[derive(Debug,FromArgs)]
@@ -157,6 +225,7 @@ impl CliConfig{
 
 fn main() {
 
+    let rt = tokio::runtime::Runtime::new().unwrap();
     let args= argp::parse_args_or_exit::<CliArgs>(argp::DEFAULT);
     if atty::is(Stream::Stdout){
         println!("\x1b[2J\x1b[1;1H");
@@ -228,69 +297,33 @@ fn main() {
     }
 
     debug!("Host list: {:?}", host_list);
-    let mut results = Vec::<Vec::<SHop>>::new();
+    let results:Vec<Vec<SHop>>;
 
-    //todo make this a thread pool or something
-    for destination in host_list{
+    results = rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
+        for destination in host_list{
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let hop_list = trace(destination).await;
+                tx.send(hop_list).await.or_else(|e| {
+                    error!("Error sending hop list: {}", e);
+                    Err(e)
+                }).unwrap_or_else(|_| {
+                    debug!("Hop list sent");
+                });
+                drop(tx);
+            });
+        }
+        drop(tx);
 
-        let destination = match destination.parse::<IpAddr>()
+        let mut results = Vec::<Vec::<SHop>>::new();
+        while let Some(hop_list) = rx.recv().await
         {
-            Ok(ip) => ip,
-            Err(e) => {
-                error!("Error parsing destination: {}, {}", destination, e);
-                continue
-            }
-        };
-
-        let tracer:Tracer = match Tracer::new(destination)
-        {
-            Ok(t) => t,
-            Err(e) => {
-                error!("Error creating tracer: {}", e);
-                continue
-            }
-        };
-
-        let start_time = Utc::now();
-        let handle = thread::spawn(move || tracer.trace());
-
-        let hop_list :Vec<SHop> = match handle.join(){
-            Ok(result) => {
-                result.unwrap()
-                    .nodes.iter()
-                    .map(|n|
-                         {
-                             debug!("{:?}", n);
-                             SHop{
-                                 rtt:n.rtt.as_micros() as u64 * 1000,
-                                 seq:n.seq.into(),
-                                 host:n.host_name.to_owned(),
-                                 ip:n.ip_addr.to_string(),
-                                 timeout:n.rtt.as_micros() == 0,
-                                 final_dest:destination.to_string(),
-                                 node_type:
-                                     match n.node_type{
-                                         tracert::node::NodeType::DefaultGateway => "DefaultGateway".to_string(),
-                                         tracert::node::NodeType::Relay => "Relay".to_string(),
-                                         tracert::node::NodeType::Destination => "Destination".to_string(),
-                                     },
-                                 time:start_time.timestamp_nanos_opt().unwrap_or(
-                                          start_time.timestamp_micros() * 1000
-                                          ) as u64
-                             }
-                         }).collect()
-
-            }
-            Err(e) => {
-                error!("Error in thread: {}",
-                       e.downcast_ref::<String>()
-                       .unwrap_or(&"Unknown error".to_string())
-                      );
-                Vec::new()
-            }
-        };
-        results.push(hop_list.clone());
-    }
+            debug!("Got hop list: {:?}", hop_list);
+            results.push(hop_list);
+        }
+        results
+    });
 
     let influxdb_api_key:String = match args.influxdb_api_key{
         Some(k) => k,
@@ -331,11 +364,28 @@ fn main() {
     //let full_host = format!("{}:{}", influxdb_host, influxdb_port);
     let full_host = format!("{}", influxdb_host);
     println!("{}",json!(results).to_string());
-
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(async{
-        for batch in results{
-            post_to_influxdb2(&influxdb_api_key, &full_host, &influxdb_org, &influxdb_bucket, batch).await.unwrap();
-        }
+    let tasks = results.iter().map(|batch|{
+        let batch = batch.clone();
+        let full_host = full_host.clone();
+        let influxdb_api_key = influxdb_api_key.clone();
+        let influxdb_bucket = influxdb_bucket.clone();
+        let influxdb_org = influxdb_org.clone();
+        post_to_influxdb2(influxdb_api_key, full_host, influxdb_org, influxdb_bucket, batch)
     });
+
+    let res = rt.block_on(async {
+        futures::future::join_all(tasks).await
+    });
+
+    for r in res.iter(){
+        trace!("Result: {:?}", r);
+        match r{
+            Ok(x) => info!("Successfully sent trace for {}", x.0),
+            Err(e) => error!("Error: {}", e)
+        }
+    }
+
+    info!("Done");
+
+
 }
