@@ -21,7 +21,7 @@ struct SHop
     timeout:bool,
     final_dest:String,
     node_type:String,
-    time:DateTime<Utc>
+    time:u64,
 }
 
 impl SHop{
@@ -35,9 +35,7 @@ impl SHop{
                 self.final_dest,
                 self.node_type,
                 self.rtt,
-                self.time.timestamp_nanos_opt().unwrap_or(
-                    self.time.timestamp_micros() as i64 * 1_000
-                ),
+                self.time,
                 )
     }
 
@@ -276,8 +274,9 @@ fn main() {
                                          tracert::node::NodeType::Relay => "Relay".to_string(),
                                          tracert::node::NodeType::Destination => "Destination".to_string(),
                                      },
-                                 time:start_time,
-
+                                 time:start_time.timestamp_nanos_opt().unwrap_or(
+                                          start_time.timestamp_micros() * 1000
+                                          ) as u64
                              }
                          }).collect()
 
