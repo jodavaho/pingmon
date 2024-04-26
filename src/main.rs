@@ -1,7 +1,7 @@
 use log;
 use log::{error, info, warn,debug, trace};
 use std::net::IpAddr;
-use std::thread;
+
 use tracert::trace::Tracer;
 use serde::{Serialize, Deserialize};
 use serde_json::json;
@@ -9,7 +9,7 @@ use argp::FromArgs;
 use std::path::PathBuf;
 use atty::Stream;
 use env_logger::Env;
-use chrono::{DateTime,Utc};
+use chrono::{Utc};
 
 #[derive(Debug,Serialize, Deserialize, Clone)]
 struct SHop
@@ -296,34 +296,6 @@ fn main() {
         host_list.extend(args.hosts);
     }
 
-    debug!("Host list: {:?}", host_list);
-    let results:Vec<Vec<SHop>>;
-
-    results = rt.block_on(async {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(100);
-        for destination in host_list{
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let hop_list = trace(destination).await;
-                tx.send(hop_list).await.or_else(|e| {
-                    error!("Error sending hop list: {}", e);
-                    Err(e)
-                }).unwrap_or_else(|_| {
-                    debug!("Hop list sent");
-                });
-                drop(tx);
-            });
-        }
-        drop(tx);
-
-        let mut results = Vec::<Vec::<SHop>>::new();
-        while let Some(hop_list) = rx.recv().await
-        {
-            debug!("Got hop list: {:?}", hop_list);
-            results.push(hop_list);
-        }
-        results
-    });
 
     let influxdb_api_key:String = match args.influxdb_api_key{
         Some(k) => k,
@@ -363,7 +335,24 @@ fn main() {
 
     //let full_host = format!("{}:{}", influxdb_host, influxdb_port);
     let full_host = format!("{}", influxdb_host);
+
+    debug!("Host list: {:?}", host_list);
+    let tasks = host_list.iter().map(|destination|{
+        let destination = destination.clone();
+        tokio::spawn(async move {
+            trace(destination).await
+        })
+    });
+
+    let results = rt.block_on(async {
+        futures::future::join_all(tasks).await
+    })
+    .iter()
+    .map(|r| r.as_ref().unwrap().clone())
+    .collect::<Vec<Vec<SHop>>>();
+
     println!("{}",json!(results).to_string());
+
     let tasks = results.iter().map(|batch|{
         let batch = batch.clone();
         let full_host = full_host.clone();
