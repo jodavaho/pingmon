@@ -1,0 +1,5 @@
+[unit]
+Description=Pingmon Service
+
+[Service]
+ExecStart=/usr/bin/pingmon
